@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# count-by-category — summarize a CSV by grouping rows on a named column.
+#
+# Usage:
+#   count-by-category --input <csv-file> --column <column-name>
+#   count-by-category --help
+#   count-by-category --version
+
+set -euo pipefail
+
+VERSION="count-by-category v0.1.0"
+
+print_help() {
+    cat <<'EOF'
+Usage:
+  count-by-category --input <csv-file> --column <column-name>
+  count-by-category --help
+  count-by-category --version
+
+Summarize a CSV file by grouping rows on a named column.
+
+Options:
+  --input <csv-file>      Path to the CSV file to read. The first row is treated as the header.
+  --column <column-name>  Name of the column to group on (must match a header value).
+  --help                  Show this message and exit.
+  --version               Print version and exit.
+
+Output:
+  Tab-separated "category<TAB>count", one line per unique value.
+  Sorted by count descending; ties broken by category name ascending.
+
+Exit codes:
+  0  Success (including the case where the CSV has only a header row).
+  1  --input missing or file does not exist.
+  2  --column missing.
+  3  --column not present in the header row.
+EOF
+}
+
+err() {
+    printf '%s\n' "$*" >&2
+}
+
+# ---- argument parsing ----
+input=""
+column=""
+input_set=0
+column_set=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            print_help
+            exit 0
+            ;;
+        --version|-V)
+            printf '%s\n' "$VERSION"
+            exit 0
+            ;;
+        --input)
+            if [[ $# -lt 2 ]]; then
+                err "error: --input requires a value"
+                exit 1
+            fi
+            input="$2"
+            input_set=1
+            shift 2
+            ;;
+        --input=*)
+            input="${1#--input=}"
+            input_set=1
+            shift
+            ;;
+        --column)
+            if [[ $# -lt 2 ]]; then
+                err "error: --column requires a value"
+                exit 2
+            fi
+            column="$2"
+            column_set=1
+            shift 2
+            ;;
+        --column=*)
+            column="${1#--column=}"
+            column_set=1
+            shift
+            ;;
+        *)
+            err "error: unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# ---- validation ----
+if [[ $input_set -eq 0 || -z "$input" ]]; then
+    err "error: --input is required"
+    exit 1
+fi
+
+if [[ ! -f "$input" ]]; then
+    err "error: input file not found: $input"
+    exit 1
+fi
+
+if [[ $column_set -eq 0 || -z "$column" ]]; then
+    err "error: --column is required"
+    exit 2
+fi
+
+# ---- locate the requested column in the header ----
+# Read header (first line), strip a trailing CR if present.
+header_line=$(head -n 1 -- "$input" || true)
+header_line="${header_line%$'\r'}"
+
+if [[ -z "$header_line" ]]; then
+    err "error: column not found in header: $column"
+    exit 3
+fi
+
+# Find 1-based index of the column.
+col_index=$(
+    awk -v want="$column" '
+        BEGIN { FS = "," }
+        {
+            for (i = 1; i <= NF; i++) {
+                h = $i
+                # strip surrounding whitespace
+                sub(/^[ \t]+/, "", h)
+                sub(/[ \t]+$/, "", h)
+                # strip surrounding double quotes (single pair only)
+                if (h ~ /^".*"$/) {
+                    h = substr(h, 2, length(h) - 2)
+                }
+                if (h == want) { print i; exit }
+            }
+            exit
+        }
+    ' <<<"$header_line"
+)
+
+if [[ -z "${col_index:-}" ]]; then
+    err "error: column not found in header: $column"
+    exit 3
+fi
+
+# ---- aggregate data rows ----
+# Read everything after the header, count occurrences of the requested column,
+# then sort: count desc, then category asc.
+#
+# awk emits "<count>\t<category>" so we can sort numerically on field 1
+# and lexicographically on field 2; we then flip back to "<category>\t<count>".
+
+tail -n +2 -- "$input" | awk -v idx="$col_index" '
+    BEGIN { FS = "," }
+    {
+        # strip trailing CR
+        sub(/\r$/, "")
+        # skip wholly empty lines
+        if (NF == 0 || $0 == "") next
+        v = $idx
+        # strip surrounding whitespace
+        sub(/^[ \t]+/, "", v)
+        sub(/[ \t]+$/, "", v)
+        # strip surrounding double quotes (single pair only)
+        if (v ~ /^".*"$/) {
+            v = substr(v, 2, length(v) - 2)
+        }
+        counts[v]++
+    }
+    END {
+        for (k in counts) {
+            printf "%d\t%s\n", counts[k], k
+        }
+    }
+' | sort -t $'\t' -k1,1nr -k2,2 | awk -F '\t' 'BEGIN{OFS="\t"} {print $2, $1}'

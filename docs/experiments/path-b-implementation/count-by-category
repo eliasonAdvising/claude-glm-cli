@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="count-by-category v0.1.0"
+
+show_help() {
+    cat <<'EOF'
+Usage: ./count-by-category --input <csv-file> --column <column-name>
+       ./count-by-category --help
+       ./count-by-category --version
+
+Summarize a CSV file by grouping rows on a named column.
+
+Options:
+  --input <file>    Path to the CSV file (required)
+  --column <name>   Name of the column to group by (required)
+  --help            Show this help message
+  --version         Show version information
+
+Output:
+  Tab-separated category<TAB>count, sorted by count descending,
+  then by category name ascending for ties.
+EOF
+}
+
+show_version() {
+    echo "$VERSION"
+}
+
+# Parse arguments
+input_file=""
+column_name=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --input)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --input requires a file path" >&2
+                exit 1
+            fi
+            input_file="$2"
+            shift 2
+            ;;
+        --column)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --column requires a column name" >&2
+                exit 2
+            fi
+            column_name="$2"
+            shift 2
+            ;;
+        --help)
+            show_help
+            exit 0
+            ;;
+        --version)
+            show_version
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown option '$1'" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate --input
+if [[ -z "$input_file" ]]; then
+    echo "Error: --input is required" >&2
+    exit 1
+fi
+
+if [[ ! -f "$input_file" ]]; then
+    echo "Error: File does not exist: $input_file" >&2
+    exit 1
+fi
+
+# Validate --column
+if [[ -z "$column_name" ]]; then
+    echo "Error: --column is required" >&2
+    exit 2
+fi
+
+# Find column index from header
+header=$(head -n 1 "$input_file")
+column_index=0
+current_index=1
+
+# Parse IFS=, read -ra to split by comma
+IFS=, read -ra fields <<< "$header"
+for field in "${fields[@]}"; do
+    # Trim whitespace and quotes
+    clean_field=$(echo "$field" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//')
+    if [[ "$clean_field" == "$column_name" ]]; then
+        column_index=$current_index
+        break
+    fi
+    ((current_index++))
+done
+
+if [[ $column_index -eq 0 ]]; then
+    echo "Error: Column '$column_name' not found in header" >&2
+    exit 3
+fi
+
+# Process data rows
+awk -F',' -v col_idx="$column_index" '
+    NR > 1 {
+        # Get the column value, trim whitespace and quotes
+        val = $col_idx
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+        gsub(/^"|"$|"/, "", val)
+
+        if (val != "") {
+            counts[val]++
+        }
+    }
+    END {
+        for (cat in counts) {
+            print cat "\t" counts[cat]
+        }
+    }
+' "$input_file" | sort -t $'\t' -k2,2rn -k1,1
