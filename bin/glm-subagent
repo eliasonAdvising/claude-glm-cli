@@ -185,7 +185,7 @@ RESPONSE_BYTES="${#RESPONSE}"
 # Note: Token counts are not available from claude --print; logged as null
 # TODO: Extend wrapper to call Z.AI chat completions API directly when token-level data is required
 TELEMETRY_ENTRY="$(jq -c \
-  --arg timestamp "$(date -Iseconds)" \
+  --arg ts "$(date -Iseconds)" \
   --arg uuid "$DISPATCH_UUID" \
   --arg cwd "$CWD" \
   --arg model "$MODEL" \
@@ -197,7 +197,7 @@ TELEMETRY_ENTRY="$(jq -c \
   --argjson completion_tokens null \
   --argjson total_tokens null \
   '{
-    timestamp: $timestamp,
+    ts: $ts,
     uuid: $uuid,
     cwd: $cwd,
     model: $model,
