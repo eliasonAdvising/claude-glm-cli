@@ -141,3 +141,17 @@ After every dispatch (success, no-op, stop, abandoned), append a one-line dated 
 ## Telemetry
 
 Every `glm-subagent` dispatch logs to `~/.local/share/glm/usage.jsonl` automatically. Track token spend, success rate, and common failure modes.
+
+## Integration with superpowers
+
+If you arrive at glm-task from inside a superpowers workflow (brainstorming / writing-plans / subagent-driven-development / executing-plans), see `SUPERPOWERS-INTEGRATION.md` in the glm-cli repo for the lane-labeling pattern.
+
+**Short version:** At task-list time, annotate each task with `[lane: Agent | glm | glm-fan/group-N]`. Brief authors stay on the SDD task-brief format; only the dispatch mechanism changes per lane:
+
+- `[lane: Agent]` → `Agent({subagent_type: "general-purpose", prompt: "<implementer-brief>"})`
+- `[lane: glm]` → `glm-subagent <<'PACKET'\n<glm_task_packet>...</glm_task_packet>\nPACKET`
+- `[lane: glm-fan/group-X]` → Fire N Agents in one turn; each Agent owns one glm-subagent subprocess
+
+The decision happens once, cold, before any implementer fires. Telemetry from `glm-usage --last 24h` closes the empirical-data loop — append a one-line summary to the `LEARNINGS.md` the SDD process already maintains.
+
+For parallel-eligible groups (≥3 tasks on different files), use `glm-fan` instead of serialized dispatches. The SDD "no parallel implementers" rule is about file-conflict prevention; parallel-fan is safe when tasks touch disjoint files.
