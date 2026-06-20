@@ -1,0 +1,77 @@
+{
+  "version": "1.0.0",
+  "endpoints": [
+    {
+      "name": "create_user",
+      "method": "POST",
+      "path": "/v1/users",
+      "retry_policy": "aggressive",
+      "timeout_ms": 5000
+    },
+    {
+      "name": "get_user",
+      "method": "GET",
+      "path": "/v1/users/:id",
+      "retry_policy": "gentle",
+      "timeout_ms": 2000
+    },
+    {
+      "name": "update_user",
+      "method": "PATCH",
+      "path": "/v1/users/:id",
+      "retry_policy": "gentle",
+      "timeout_ms": 3000
+    },
+    {
+      "name": "delete_user",
+      "method": "DELETE",
+      "path": "/v1/users/:id",
+      "retry_policy": "none",
+      "timeout_ms": 5000
+    },
+    {
+      "name": "list_users",
+      "method": "GET",
+      "path": "/v1/users",
+      "retry_policy": "gentle",
+      "timeout_ms": 8000
+    }
+  ],
+  "retry_policies": {
+    "aggressive": {
+      "max_attempts": 5,
+      "backoff_ms": 100,
+      "jitter": 0.2
+    },
+    "gentle": {
+      "max_attempts": 3,
+      "backoff_ms": 500,
+      "jitter": 0.1
+    },
+    "none": {
+      "max_attempts": 1,
+      "backoff_ms": 0,
+      "jitter": 0
+    }
+  },
+  "env": [
+    {
+      "key": "API_BASE_URL",
+      "type": "string",
+      "default": "https://api.example.com",
+      "required": true
+    },
+    {
+      "key": "API_TIMEOUT_MS",
+      "type": "number",
+      "default": 5000,
+      "required": false
+    },
+    {
+      "key": "API_RETRY_ENABLED",
+      "type": "boolean",
+      "default": true,
+      "required": false
+    }
+  ]
+}
