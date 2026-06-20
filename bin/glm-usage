@@ -2,32 +2,97 @@
 set -euo pipefail
 
 VERSION="v0.1.0-dev"
-
-[[ "${1:-}" == "--version" ]] && echo "glm-usage $VERSION" && exit 0
-[[ "${1:-}" == "--help" ]] && echo "Usage: glm-usage [--last Nd] [--format json|csv]" && exit 0
+LOG_FILE="$HOME/.local/share/glm/usage.jsonl"
 
 LAST_WINDOW="7d"
+SINCE_ISO=""
+CWD_FILTER=""
 FORMAT="text"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --last) LAST_WINDOW="$2"; shift 2 ;;
-    --format) FORMAT="$2"; shift 2 ;;
-    *) echo "error: unknown option: $1" >&2; exit 1 ;;
+    --version) echo "glm-usage $VERSION"; exit 0 ;;
+    --help|-h)
+      cat <<HELP
+glm-usage — query GLM dispatch telemetry from ~/.local/share/glm/usage.jsonl
+
+USAGE:
+  glm-usage [--last 7d|24h|...] [--since ISO_DATE] [--cwd SUBSTR] [--format text|json|csv|table]
+
+OPTIONS:
+  --last NWINDOW    Time window (e.g. 24h, 7d, 30d). Default: 7d.
+  --since ISO_DATE  Start date (overrides --last). Example: 2026-06-19T00:00:00Z
+  --cwd SUBSTR      Filter by cwd substring.
+  --format FMT      text (default summary), json (raw filtered), csv, table (per-cwd).
+  --version         Print version.
+  --help            This message.
+
+EXIT CODES:
+  0    success (or no log yet)
+  64   bad argument
+HELP
+      exit 0
+      ;;
+    --last) LAST_WINDOW="${2:-}"; shift 2 ;;
+    --since) SINCE_ISO="${2:-}"; shift 2 ;;
+    --cwd) CWD_FILTER="${2:-}"; shift 2 ;;
+    --format) FORMAT="${2:-text}"; shift 2 ;;
+    *) echo "error: unknown option: $1" >&2; exit 64 ;;
   esac
 done
 
-LOG_FILE="$HOME/.local/share/glm/usage.jsonl"
-
-[[ ! -f "$LOG_FILE" ]] && echo "No telemetry yet — fire a glm-subagent dispatch to generate data." && exit 0
-
-if [[ "$FORMAT" == "json" ]]; then
-  cat "$LOG_FILE"
-elif [[ "$FORMAT" == "csv" ]]; then
-  echo "CSV format not yet implemented"
-else
-  COUNT=$(wc -l < "$LOG_FILE" 2>/dev/null || echo "0")
-  echo "Last ${LAST_WINDOW}: ${COUNT} entries in log"
+# Compute the since timestamp (jq-friendly ISO 8601).
+if [[ -z "$SINCE_ISO" ]]; then
+  case "$LAST_WINDOW" in
+    *h) hours="${LAST_WINDOW%h}"; SINCE_ISO=$(date -u -d "$hours hours ago" +%Y-%m-%dT%H:%M:%SZ) ;;
+    *d) days="${LAST_WINDOW%d}";  SINCE_ISO=$(date -u -d "$days days ago"  +%Y-%m-%dT%H:%M:%SZ) ;;
+    *)  echo "error: --last must be Nh or Nd (e.g. 24h, 7d)" >&2; exit 64 ;;
+  esac
 fi
 
-exit 0
+if [[ ! -f "$LOG_FILE" || ! -s "$LOG_FILE" ]]; then
+  echo "No telemetry yet at $LOG_FILE — fire a glm-subagent dispatch to generate data."
+  exit 0
+fi
+
+# Filter the JSONL once into a temp; reuse across formats.
+FILTERED=$(jq -c --arg since "$SINCE_ISO" --arg cwd "$CWD_FILTER" '
+  select(.ts >= $since) | select($cwd == "" or (.cwd | contains($cwd)))
+' "$LOG_FILE")
+
+if [[ -z "$FILTERED" ]]; then
+  echo "No telemetry in window since $SINCE_ISO${CWD_FILTER:+ (cwd filter: $CWD_FILTER)}."
+  exit 0
+fi
+
+case "$FORMAT" in
+  json)
+    printf '%s\n' "$FILTERED"
+    ;;
+  csv)
+    echo "ts,uuid,cwd,model,packet_bytes,response_bytes,wall_clock_ms,exit_code"
+    printf '%s\n' "$FILTERED" | jq -r '[.ts,.uuid,.cwd,.model,.packet_bytes,.response_bytes,.wall_clock_ms,.exit_code] | @csv'
+    ;;
+  table)
+    printf '%-50s %6s %7s %9s %10s\n' "cwd" "calls" "errors" "avg_ms" "bytes_in"
+    printf '%-50s %6s %7s %9s %10s\n' "---" "---" "---" "---" "---"
+    printf '%s\n' "$FILTERED" | jq -s -r 'group_by(.cwd) | .[] | [
+      .[0].cwd,
+      length,
+      ([.[] | select(.exit_code != 0)] | length),
+      ((map(.wall_clock_ms) | add) / length | floor),
+      (map(.packet_bytes) | add)
+    ] | @tsv' | awk -F'\t' '{printf "%-50s %6s %7s %9s %10s\n", $1, $2, $3, $4, $5}'
+    ;;
+  text|*)
+    SUMMARY=$(printf '%s\n' "$FILTERED" | jq -s '{
+      calls: length,
+      errors: ([.[] | select(.exit_code != 0)] | length),
+      avg_wall_ms: (if length > 0 then ((map(.wall_clock_ms) | add) / length | floor) else 0 end),
+      bytes_in: (map(.packet_bytes) | add),
+      bytes_out: (map(.response_bytes) | add),
+      since: $since
+    }' --arg since "$SINCE_ISO")
+    echo "$SUMMARY" | jq -r '"glm-usage since \(.since)\n  \(.calls) calls, \(.errors) errors, \(.avg_wall_ms) ms avg wall-clock, \(.bytes_in) bytes packet content, \(.bytes_out) bytes response"'
+    ;;
+esac
