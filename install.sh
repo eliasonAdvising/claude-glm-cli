@@ -80,8 +80,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # Remove bin symlinks
   for bin in "$BIN_DIR"/*; do
     [[ -f "$bin" ]] || continue
-    local name="$(basename "$bin")"
-    local link="$HOME/.local/bin/$name"
+    name="$(basename "$bin")"
+    link="$HOME/.local/bin/$name"
 
     if [[ -L "$link" ]]; then
       rm "$link"
@@ -92,8 +92,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # Remove skills symlinks
   for skill_dir in "$SKILLS_DIR"/*; do
     [[ -d "$skill_dir" ]] || continue
-    local name="$(basename "$skill_dir")"
-    local link="$HOME/.claude/skills/$name"
+    name="$(basename "$skill_dir")"
+    link="$HOME/.claude/skills/$name"
 
     if [[ -L "$link" ]]; then
       rm "$link"
@@ -121,8 +121,8 @@ mkdir -p "$HOME/.claude/skills"
 
 for bin in "$BIN_DIR"/*; do
   [[ -f "$bin" ]] || continue
-  local name="$(basename "$bin")"
-  local link="$HOME/.local/bin/$name"
+  name="$(basename "$bin")"
+  link="$HOME/.local/bin/$name"
 
   ln -sfn "$bin" "$link"
   echo "✓ installed: $name"
@@ -134,8 +134,8 @@ done
 
 for skill_dir in "$SKILLS_DIR"/*; do
   [[ -d "$skill_dir" ]] || continue
-  local name="$(basename "$skill_dir")"
-  local link="$HOME/.claude/skills/$name"
+  name="$(basename "$skill_dir")"
+  link="$HOME/.claude/skills/$name"
 
   ln -sfn "$skill_dir" "$link"
   echo "✓ installed: $name"
