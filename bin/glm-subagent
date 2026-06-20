@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# glm-subagent
+#
+# Portable GLM-backed Claude Code subprocess wrapper.
+#
+# Reads a task prompt on stdin and emits the subprocess's final text on stdout.
+# Used by the parent Claude session to delegate bounded execution tasks to GLM.
+# This wrapper is project-agnostic and can be installed globally at ~/.local/bin/glm-subagent.
+#
+# FEATURES:
+#   F1 - Usage telemetry: logs each dispatch to ~/.local/share/glm/usage.jsonl
+#   F2 - Layered system prompt: loads .claude/glm-conventions.md from current project if present
+#
+# The subprocess inherits the parent process's working directory, the user's
+# ~/.claude/settings.json (allow-listed tools), and the project's local skills.
+# Permission prompts are bypassed (--dangerously-skip-permissions) because there
+# is no interactive user to answer them; scope is enforced by:
+#   (1) --allowed-tools allowlist below (harness-level, not prompt-level), and
+#   (2) the packet's Constraints / Do not change / Stop conditions.
+#
+# Env vars:
+#   GLM_API_KEY        required — Z.AI bearer token (or use ~/.glm-key)
+#   GLM_MODEL          optional — default: glm-4.6
+#   GLM_SMALL_MODEL    optional — default: glm-4.5-air
+#   GLM_ENDPOINT       optional — default: https://api.z.ai/api/anthropic
+#
+# Exit codes:
+#   0    success
+#   1    general error
+#   64   GLM_API_KEY missing
+#   65   empty prompt on stdin
+#   66   bad permissions on ~/.glm-key
+#   *    pass-through from claude subprocess
+
+set -euo pipefail
+
+VERSION="v0.1.0-dev"
+
+# -----------------------------------------------------------------------------
+# --version / --help
+# -----------------------------------------------------------------------------
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "glm-cli $VERSION"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+glm-subagent - Portable GLM-backed Claude Code subprocess wrapper
+
+USAGE:
+  echo "<task_packet>" | glm-subagent
+  glm-subagent --version
+  glm-subagent --help
+
+ENVIRONMENT VARIABLES:
+  GLM_API_KEY        Z.AI bearer token (or use ~/.glm-key)
+  GLM_MODEL          Model to use (default: glm-4.6)
+  GLM_SMALL_MODEL    Small/fast model (default: glm-4.5-air)
+  GLM_ENDPOINT       API endpoint (default: https://api.z.ai/api/anthropic)
+
+EXIT CODES:
+  0    success
+  1    general error
+  64   GLM_API_KEY missing
+  65   empty prompt on stdin
+  66   bad permissions on ~/.glm-key
+
+FEATURES:
+  F1 - Telemetry logged to ~/.local/share/glm/usage.jsonl
+  F2 - Loads .claude/glm-conventions.md from current project if present
+EOF
+  exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Resolve GLM_API_KEY
+# -----------------------------------------------------------------------------
+
+# Prefer env var (e.g. exported in ~/.bashrc), fall back to ~/.glm-key (chmod 600)
+if [[ -z "${GLM_API_KEY:-}" ]] && [[ -r "$HOME/.glm-key" ]]; then
+  # Strict permission check: refuse if the file is group/world readable
+  PERMS="$(stat -c '%a' "$HOME/.glm-key" 2>/dev/null || stat -f '%Lp' "$HOME/.glm-key")"
+  if [[ "$PERMS" != "600" && "$PERMS" != "400" ]]; then
+    echo "error: ~/.glm-key has perms $PERMS; run 'chmod 600 ~/.glm-key'" >&2
+    exit 66
+  fi
+  GLM_API_KEY="$(head -n1 "$HOME/.glm-key" | tr -d '[:space:]')"
+fi
+
+if [[ -z "${GLM_API_KEY:-}" ]]; then
+  echo "error: GLM_API_KEY not set and ~/.glm-key not present" >&2
+  exit 64
+fi
+
+# -----------------------------------------------------------------------------
+# Read prompt from stdin
+# -----------------------------------------------------------------------------
+
+PROMPT="$(cat)"
+if [[ -z "${PROMPT// /}" ]]; then
+  echo "error: empty prompt on stdin" >&2
+  exit 65
+fi
+
+# -----------------------------------------------------------------------------
+# F2 - Layered system prompt (load conventions from current project)
+# -----------------------------------------------------------------------------
+
+# Base universal system prompt
+BASE_SYSTEM_PROMPT="You are GLM, a focused executor. Output exactly what the task packet asks for. No narration, no opinions, no scope creep. Prefer minimal changes."
+
+CONVENTIONS_FILE="$PWD/.claude/glm-conventions.md"
+SYSTEM_PROMPT="$BASE_SYSTEM_PROMPT"
+
+if [[ -r "$CONVENTIONS_FILE" ]]; then
+  CONVENTIONS_CONTENT="$(cat "$CONVENTIONS_FILE")"
+  CONVENTIONS_LEN="${#CONVENTIONS_CONTENT}"
+
+  # Warn if conventions file is excessively long
+  if [[ $CONVENTIONS_LEN -gt 4000 ]]; then
+    echo "warn: conventions file is $CONVENTIONS_LEN chars; consider trimming" >&2
+  fi
+
+  # Append conventions to base system prompt
+  SYSTEM_PROMPT="$BASE_SYSTEM_PROMPT
+
+## Project conventions
+
+$CONVENTIONS_CONTENT"
+fi
+
+# -----------------------------------------------------------------------------
+# Prepare telemetry (F1)
+# -----------------------------------------------------------------------------
+
+DISPATCH_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "unknown-$(date +%s%N)")"
+START_EPOCH_MS="$(date +%s%3N)"  # milliseconds since epoch
+PACKET_BYTES="${#PROMPT}"
+CWD="$PWD"
+MODEL="${GLM_MODEL:-glm-4.6}"
+LOG_FILE="$HOME/.local/share/glm/usage.jsonl"
+
+# Ensure log directory exists
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# Allowed tools allowlist (same as ffusa-site wrapper)
+# -----------------------------------------------------------------------------
+
+ALLOWED_TOOLS="Read,Edit,Write,Glob,Grep,\
+Bash(npm:*),Bash(npx:*),Bash(node:*),\
+Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git show:*),\
+Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git blame:*),\
+Bash(ls:*),Bash(cat:*),Bash(pwd:*),Bash(echo:*),Bash(test:*),\
+Bash(grep:*),Bash(find:*),Bash(head:*),Bash(tail:*),Bash(wc:*)"
+
+# -----------------------------------------------------------------------------
+# Invoke claude subprocess
+# -----------------------------------------------------------------------------
+
+# Capture response for telemetry
+RESPONSE="$(printf '%s' "$PROMPT" | env \
+  ANTHROPIC_BASE_URL="${GLM_ENDPOINT:-https://api.z.ai/api/anthropic}" \
+  ANTHROPIC_AUTH_TOKEN="$GLM_API_KEY" \
+  ANTHROPIC_MODEL="${GLM_MODEL:-glm-4.6}" \
+  ANTHROPIC_SMALL_FAST_MODEL="${GLM_SMALL_MODEL:-glm-4.5-air}" \
+  claude --print \
+         --dangerously-skip-permissions \
+         --allowed-tools "$ALLOWED_TOOLS" \
+         --append-system-prompt "$SYSTEM_PROMPT")"
+
+CLAUDE_EXIT_CODE=$?
+
+# -----------------------------------------------------------------------------
+# F1 - Write telemetry (non-blocking)
+# -----------------------------------------------------------------------------
+
+END_EPOCH_MS="$(date +%s%3N)"
+WALL_CLOCK_MS=$((END_EPOCH_MS - START_EPOCH_MS))
+RESPONSE_BYTES="${#RESPONSE}"
+
+# Build telemetry entry as JSON line
+# Note: Token counts are not available from claude --print; logged as null
+# TODO: Extend wrapper to call Z.AI chat completions API directly when token-level data is required
+TELEMETRY_ENTRY="$(jq -c \
+  --arg timestamp "$(date -Iseconds)" \
+  --arg uuid "$DISPATCH_UUID" \
+  --arg cwd "$CWD" \
+  --arg model "$MODEL" \
+  --argjson packet_bytes "$PACKET_BYTES" \
+  --argjson response_bytes "$RESPONSE_BYTES" \
+  --argjson wall_clock_ms "$WALL_CLOCK_MS" \
+  --argjson exit_code "$CLAUDE_EXIT_CODE" \
+  --argjson prompt_tokens null \
+  --argjson completion_tokens null \
+  --argjson total_tokens null \
+  '{
+    timestamp: $timestamp,
+    uuid: $uuid,
+    cwd: $cwd,
+    model: $model,
+    packet_bytes: $packet_bytes,
+    response_bytes: $response_bytes,
+    wall_clock_ms: $wall_clock_ms,
+    exit_code: $exit_code,
+    prompt_tokens: $prompt_tokens,
+    completion_tokens: $completion_tokens,
+    total_tokens: $total_tokens
+  }' <<< "{}" 2>/dev/null)"
+
+# Append to log file (silently fail if write fails)
+if [[ -n "${TELEMETRY_ENTRY:-}" ]]; then
+  echo "$TELEMETRY_ENTRY" >> "$LOG_FILE" 2>/dev/null || true
+fi
+
+# -----------------------------------------------------------------------------
+# Emit response and exit
+# -----------------------------------------------------------------------------
+
+printf '%s' "$RESPONSE"
+exit "$CLAUDE_EXIT_CODE"
