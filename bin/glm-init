@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# glm-init
+#
+# Per-project setup for GLM-powered development.
+#
+# Creates:
+#   - .claude/glm-conventions.md (project-specific GLM conventions template)
+#   - .superpowers/ directory (for user-created skills)
+#   - .superpowers/ entry in .gitignore (if .gitignore exists)
+#
+# Usage:
+#   glm-init              # Initialize current directory
+#   glm-init <project>    # Initialize specific project directory
+#   glm-init --help       # Show this help
+
+set -euo pipefail
+
+VERSION="v0.1.0-dev"
+
+# -----------------------------------------------------------------------------
+# --help / --version
+# -----------------------------------------------------------------------------
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "glm-init $VERSION"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+glm-init - Per-project setup for GLM-powered development
+
+USAGE:
+  glm-init              # Initialize current directory
+  glm-init <project>    # Initialize specific project directory
+  glm-init --help       # Show this help
+  glm-init --version    # Show version
+
+CREATES:
+  .claude/glm-conventions.md    Project-specific GLM conventions (template)
+  .superpowers/                  Directory for user-created skills
+  .gitignore                     Adds .superpowers/ if missing (if .gitignore exists)
+
+CHECKS:
+  - glm-subagent on PATH
+  - GLM_API_KEY env var or ~/.glm-key file
+
+EXAMPLE:
+  cd ~/projects/my-project
+  glm-init
+  # Edit .claude/glm-conventions.md with your project's conventions
+EOF
+  exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Resolve project directory
+# -----------------------------------------------------------------------------
+
+PROJECT_DIR="${1:-$PWD}"
+
+# Validate directory exists
+if [[ ! -d "$PROJECT_DIR" ]]; then
+  echo "error: directory not found: $PROJECT_DIR" >&2
+  exit 1
+fi
+
+# Try to detect project root by walking up looking for .git, CLAUDE.md, or package.json
+DETECTED_ROOT=""
+CHECK_DIR="$PROJECT_DIR"
+while [[ "$CHECK_DIR" != "/" ]]; do
+  if [[ -d "$CHECK_DIR/.git" ]] || [[ -f "$CHECK_DIR/CLAUDE.md" ]] || [[ -f "$CHECK_DIR/package.json" ]]; then
+    DETECTED_ROOT="$CHECK_DIR"
+    break
+  fi
+  CHECK_DIR="$(dirname "$CHECK_DIR")"
+done
+
+if [[ -n "$DETECTED_ROOT" && "$DETECTED_ROOT" != "$PROJECT_DIR" ]]; then
+  echo "warning: detected project root at $DETECTED_ROOT (not $PROJECT_DIR)" >&2
+  echo "  Continuing with $PROJECT_DIR as requested" >&2
+fi
+
+# -----------------------------------------------------------------------------
+# Check prerequisites
+# -----------------------------------------------------------------------------
+
+# Check for glm-subagent on PATH
+if ! command -v glm-subagent &>/dev/null; then
+  echo "warning: glm-subagent not found on PATH — run install.sh first" >&2
+fi
+
+# Check for GLM_API_KEY
+if [[ -z "${GLM_API_KEY:-}" ]] && [[ ! -r "$HOME/.glm-key" ]]; then
+  echo "warning: GLM_API_KEY not set and ~/.glm-key not found" >&2
+  echo "  GLM dispatches will fail until you fix this" >&2
+fi
+
+# -----------------------------------------------------------------------------
+# Create .claude directory if missing
+# -----------------------------------------------------------------------------
+
+CLAUDE_DIR="$PROJECT_DIR/.claude"
+if [[ ! -d "$CLAUDE_DIR" ]]; then
+  mkdir -p "$CLAUDE_DIR"
+  echo "✓ created: $CLAUDE_DIR/"
+else
+  echo "✓ exists: $CLAUDE_DIR/"
+fi
+
+# -----------------------------------------------------------------------------
+# Create glm-conventions.md from template (if not exists)
+# -----------------------------------------------------------------------------
+
+CONVENTIONS_FILE="$CLAUDE_DIR/glm-conventions.md"
+
+if [[ -f "$CONVENTIONS_FILE" ]]; then
+  echo "  exists: $CONVENTIONS_FILE (skipping; edit manually to update)"
+else
+  cat > "$CONVENTIONS_FILE" <<'EOF'
+# GLM Conventions
+
+Project-specific conventions for GLM-powered subagent work.
+
+---
+
+## Voice
+
+<!-- Fill this in: How should GLM write copy? Examples: "operator language, not SaaS", "periods not exclamations" -->
+
+## Code style
+
+<!-- Fill this in: TypeScript patterns, naming conventions, import ordering, etc. -->
+
+## File scope
+
+<!-- Fill this in: Which directories can GLM modify? Which are read-only? -->
+
+## Verification
+
+<!-- Fill this in: Commands GLM should run to verify changes (e.g., "npm run typecheck", "npm run lint") -->
+
+## Forbidden patterns
+
+<!-- Fill this in: Anti-patterns GLM must avoid (e.g., "no inline event handlers", "no localStorage for PII") -->
+
+## Project-specific notes
+
+<!-- Fill this in: Any other context GLM should know (architecture decisions, pending refactors, etc.) -->
+EOF
+  echo "  created: $CONVENTIONS_FILE — edit it with your project's conventions"
+fi
+
+# -----------------------------------------------------------------------------
+# Create .superpowers/ directory if missing
+# -----------------------------------------------------------------------------
+
+SUPERPOWERS_DIR="$PROJECT_DIR/.superpowers"
+if [[ ! -d "$SUPERPOWERS_DIR" ]]; then
+  mkdir -p "$SUPERPOWERS_DIR"
+  touch "$SUPERPOWERS_DIR/.gitkeep"
+  echo "✓ created: $SUPERPOWERS_DIR/"
+else
+  echo "✓ exists: $SUPERPOWERS_DIR/"
+fi
+
+# -----------------------------------------------------------------------------
+# Add .superpowers/ to .gitignore (if .gitignore exists)
+# -----------------------------------------------------------------------------
+
+GITIGNORE_FILE="$PROJECT_DIR/.gitignore"
+
+if [[ -f "$GITIGNORE_FILE" ]]; then
+  # Check if .superpowers is already in .gitignore
+  if grep -q "^\.superpowers/?$" "$GITIGNORE_FILE" 2>/dev/null; then
+    echo "  .gitignore: .superpowers/ already present"
+  else
+    # Add .superpowers/ to .gitignore
+    echo "" >> "$GITIGNORE_FILE"
+    echo "# GLM user-created skills" >> "$GITIGNORE_FILE"
+    echo ".superpowers/" >> "$GITIGNORE_FILE"
+    echo "✓ updated: .gitignore (added .superpowers/)"
+  fi
+else
+  echo "  note: no .gitignore found (skipping .superpowers/ addition)"
+fi
+
+# -----------------------------------------------------------------------------
+# Done
+# -----------------------------------------------------------------------------
+
+echo ""
+echo "Done! Project is ready for GLM-powered development."
+echo "Next step: Edit $CONVENTIONS_FILE with your project's conventions."
+
+exit 0
